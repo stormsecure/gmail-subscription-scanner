@@ -1,39 +1,36 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { User, AuthContextType } from '@/types';
+import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { User } from '../types';
+
+interface AuthContextType {
+  user: User | null;
+  token: string | null;
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  signIn: () => Promise<void>;
+  signOut: () => void;
+  handleCallback: (code: string) => Promise<void>;
+}
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export function useAuth() {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
-}
+const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+const REDIRECT_URI = `${window.location.origin}/callback`;
+const SCOPE = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email';
 
-interface AuthProviderProps {
-  children: ReactNode;
-}
-
-export function AuthProvider({ children }: AuthProviderProps) {
+export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
+  const [token, setToken] = useState<string | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [token, setToken] = useState<string | null>(null);
-
-  const CLIENT_ID = (import.meta as any).env.VITE_GOOGLE_CLIENT_ID || '1022221045089-p375ut977lnafl041u0kd5056kmvirmd.apps.googleusercontent.com';
-  const REDIRECT_URI = window.location.origin + '/gmail-subscription-scanner/auth/callback';
-  const SCOPE = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email';
 
   useEffect(() => {
-    // Check if user is already authenticated
     const storedToken = localStorage.getItem('gmail_access_token');
     const storedUser = localStorage.getItem('gmail_user');
-    
+
     if (storedToken && storedUser) {
       try {
-        const userData = JSON.parse(storedUser);
-        setUser(userData);
+        const parsedUser = JSON.parse(storedUser);
+        setUser(parsedUser);
         setToken(storedToken);
         setIsAuthenticated(true);
       } catch (error) {
@@ -42,6 +39,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         localStorage.removeItem('gmail_user');
       }
     }
+
     setIsLoading(false);
   }, []);
 
@@ -62,21 +60,52 @@ export function AuthProvider({ children }: AuthProviderProps) {
     try {
       setIsLoading(true);
 
-      // For demo purposes, simulate successful authentication
-      const demoUser: User = {
-        id: 'demo-user',
-        email: 'demo@example.com',
-        name: 'Demo User',
-        picture: 'https://via.placeholder.com/40'
+      // Exchange code for access token
+      const response = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          client_id: CLIENT_ID,
+          client_secret: '', // For public clients, this can be empty
+          code: code,
+          grant_type: 'authorization_code',
+          redirect_uri: REDIRECT_URI,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Token exchange failed: ${response.status}`);
+      }
+
+      const tokenData = await response.json();
+      
+      // Get user info
+      const userResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: {
+          'Authorization': `Bearer ${tokenData.access_token}`,
+        },
+      });
+
+      if (!userResponse.ok) {
+        throw new Error(`User info fetch failed: ${userResponse.status}`);
+      }
+
+      const userData = await userResponse.json();
+      
+      const user: User = {
+        id: userData.id,
+        email: userData.email,
+        name: userData.name,
+        picture: userData.picture
       };
 
-      const demoToken = 'demo-access-token';
+      localStorage.setItem('gmail_access_token', tokenData.access_token);
+      localStorage.setItem('gmail_user', JSON.stringify(user));
 
-      localStorage.setItem('gmail_access_token', demoToken);
-      localStorage.setItem('gmail_user', JSON.stringify(demoUser));
-
-      setUser(demoUser);
-      setToken(demoToken);
+      setUser(user);
+      setToken(tokenData.access_token);
       setIsAuthenticated(true);
     } catch (error) {
       console.error('Authentication error:', error);
@@ -97,19 +126,25 @@ export function AuthProvider({ children }: AuthProviderProps) {
     setIsAuthenticated(false);
   };
 
-  const contextValue: AuthContextType = {
-    user,
-    isAuthenticated,
-    isLoading,
-    token: token || undefined,
-    signIn,
-    signOut,
-    handleCallback,
-  };
-
   return (
-    <AuthContext.Provider value={contextValue}>
+    <AuthContext.Provider value={{
+      user,
+      token,
+      isAuthenticated,
+      isLoading,
+      signIn,
+      signOut,
+      handleCallback,
+    }}>
       {children}
     </AuthContext.Provider>
   );
-}
+};
+
+export const useAuth = (): AuthContextType => {
+  const context = useContext(AuthContext);
+  if (context === undefined) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+};
